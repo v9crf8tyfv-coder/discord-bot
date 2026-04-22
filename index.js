@@ -1,7 +1,6 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST } = require('discord.js');
 const cron = require('node-cron');
 const Database = require("better-sqlite3");
-const db = new Database("alerts.db");
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -10,10 +9,11 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// DB
-const db = new sqlite3.Database("./alerts.db");
+// DB (FIX RAILWAY)
+const db = new Database("./alerts.db");
 
-db.run(`
+// TABLE
+db.exec(`
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guildId TEXT,
@@ -41,12 +41,12 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('stopalertepingday')
-        .setDescription('Supprimer UNE de tes alertes')
+        .setDescription('Supprimer ton alerte')
         .addIntegerOption(option =>
-            option.setName('id').setDescription('ID de ton alerte').setRequired(true))
+            option.setName('id').setDescription('ID alerte').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// REGISTER
+// REGISTER COMMANDS
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
@@ -61,52 +61,47 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 client.once('ready', () => {
     console.log(`BOT CONNECTÉ : ${client.user.tag}`);
 
-    db.all("SELECT * FROM alerts", (err, rows) => {
-        if (err) return console.log(err);
-        rows.forEach(startCron);
-    });
+    const rows = db.prepare("SELECT * FROM alerts").all();
+    rows.forEach(startCron);
 });
 
 // CRON
 function startCron(alert) {
-    if (!tasks[alert.id]) {
+    if (tasks[alert.id]) return;
 
-        let count = 1;
-        const [h, m] = alert.time.split(':');
+    let count = 1;
+    const [h, m] = alert.time.split(':');
 
-        const task = cron.schedule(`${m} ${h} * * *`, async () => {
-            try {
-                const channel = await client.channels.fetch(alert.channelId);
-                if (!channel) return;
+    const task = cron.schedule(`${m} ${h} * * *`, async () => {
+        try {
+            const channel = await client.channels.fetch(alert.channelId);
+            if (!channel) return;
 
-                let msg = alert.message
-                    .replace("{count}", count)
-                    .replace("{user}", `<@${alert.userId}>`);
+            let msg = alert.message
+                .replace("{count}", count)
+                .replace("{user}", `<@${alert.userId}>`);
 
-                await channel.send(msg);
-                if (alert.image) await channel.send(alert.image);
+            await channel.send(msg);
 
-                count++;
-            } catch (err) {
-                console.log("CRON ERROR:", err);
+            if (alert.image) {
+                await channel.send(alert.image);
             }
-        }, {
-            timezone: "Europe/Brussels"
-        });
 
-        tasks[alert.id] = task;
-    }
+            count++;
+        } catch (err) {
+            console.log("CRON ERROR:", err);
+        }
+    }, {
+        timezone: "Europe/Brussels"
+    });
+
+    tasks[alert.id] = task;
 }
 
 // INTERACTIONS
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
-    if (!interaction.guild) {
-        return interaction.reply({
-            content: "❌ Commande utilisable uniquement sur un serveur",
-            ephemeral: true
-        });
-    }
+    if (!interaction.guild) return;
 
     const guildId = interaction.guild.id;
 
@@ -115,68 +110,66 @@ client.on('interactionCreate', async interaction => {
         // CREATE ALERT
         if (interaction.commandName === 'alertepingday') {
 
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply();
 
             const time = interaction.options.getString('time');
             const message = interaction.options.getString('message');
             const image = interaction.options.getString('image');
             const userId = interaction.user.id;
 
-            db.run(
-                "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
-                [guildId, userId, interaction.channel.id, time, message, image],
-                function (err) {
-                    if (err) return console.log(err);
+            const stmt = db.prepare(`
+                INSERT INTO alerts (guildId, userId, channelId, time, message, image)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `);
 
-                    startCron({
-                        id: this.lastID,
-                        guildId,
-                        userId,
-                        channelId: interaction.channel.id,
-                        time,
-                        message,
-                        image
-                    });
-
-                    setTimeout(() => {
-                        interaction.editReply(`✅ Alerte créée ! ID = **${this.lastID}**`);
-                    }, 100);
-                }
+            const result = stmt.run(
+                guildId,
+                userId,
+                interaction.channel.id,
+                time,
+                message,
+                image
             );
+
+            startCron({
+                id: result.lastInsertRowid,
+                guildId,
+                userId,
+                channelId: interaction.channel.id,
+                time,
+                message,
+                image
+            });
+
+            interaction.editReply(`✅ Alerte créée ! ID = **${result.lastInsertRowid}**`);
         }
 
-        // DELETE SAFE (OWNER ONLY)
+        // DELETE ALERT (SAFE)
         if (interaction.commandName === 'stopalertepingday') {
 
-            await interaction.deferReply({ ephemeral: true });
+            await interaction.deferReply();
 
             const id = interaction.options.getInteger('id');
             const userId = interaction.user.id;
 
-            db.get(
-                "SELECT * FROM alerts WHERE id = ?",
-                [id],
-                (err, alert) => {
-                    if (err) return console.log(err);
+            const alert = db.prepare("SELECT * FROM alerts WHERE id = ?").get(id);
 
-                    if (!alert) {
-                        return interaction.editReply("❌ Aucune alerte trouvée");
-                    }
+            if (!alert) {
+                return interaction.editReply("❌ Aucune alerte trouvée");
+            }
 
-                    if (alert.userId !== userId) {
-                        return interaction.editReply("❌ Tu ne peux supprimer QUE tes alertes");
-                    }
+            if (alert.userId !== userId) {
+                return interaction.editReply("❌ Tu ne peux pas supprimer cette alerte");
+            }
 
-                    if (tasks[id]) {
-                        tasks[id].stop();
-                        delete tasks[id];
-                    }
+            if (tasks[id]) {
+                tasks[id].stop();
+                delete tasks[id];
+            }
 
-                    db.run("DELETE FROM alerts WHERE id = ?", [id]);
+            db.prepare("DELETE FROM alerts WHERE id = ?").run(id);
 
-                    return interaction.editReply(`🛑 Alerte ${id} supprimée`);
-                }
-            );
+            interaction.editReply(`🛑 Alerte ${id} supprimée`);
         }
 
     } catch (err) {
