@@ -26,13 +26,11 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 let tasks = {};
 
-// COMMANDES
+// COMMANDS
 const commands = [
     new SlashCommandBuilder()
         .setName('alertepingday')
         .setDescription('Créer une alerte quotidienne')
-        .addUserOption(option =>
-            option.setName('utilisateur').setDescription('Utilisateur').setRequired(true))
         .addStringOption(option =>
             option.setName('time').setDescription('HH:MM').setRequired(true))
         .addStringOption(option =>
@@ -42,10 +40,12 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('stopalertepingday')
-        .setDescription('Stop TON alerte uniquement')
+        .setDescription('Supprimer UNE de tes alertes')
+        .addIntegerOption(option =>
+            option.setName('id').setDescription('ID de ton alerte').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// REGISTER COMMANDS
+// REGISTER
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
@@ -62,43 +62,39 @@ client.once('ready', () => {
 
     db.all("SELECT * FROM alerts", (err, rows) => {
         if (err) return console.log(err);
-        rows.forEach(alert => startCron(alert));
+        rows.forEach(startCron);
     });
 });
 
 // CRON
 function startCron(alert) {
-    if (!tasks[alert.guildId]) tasks[alert.guildId] = {};
+    if (!tasks[alert.id]) {
 
-    if (!tasks[alert.guildId][alert.userId]) {
-        tasks[alert.guildId][alert.userId] = {};
+        let count = 1;
+
+        const [h, m] = alert.time.split(':');
+
+        const task = cron.schedule(`${m} ${h} * * *`, async () => {
+            try {
+                const channel = await client.channels.fetch(alert.channelId);
+
+                let msg = alert.message
+                    .replace("{count}", count)
+                    .replace("{user}", `<@${alert.userId}>`);
+
+                await channel.send(msg);
+                if (alert.image) await channel.send(alert.image);
+
+                count++;
+            } catch (err) {
+                console.log("CRON ERROR:", err);
+            }
+        }, {
+            timezone: "Europe/Brussels"
+        });
+
+        tasks[alert.id] = task;
     }
-
-    const [h, m] = alert.time.split(':');
-
-    let count = 1;
-
-    const task = cron.schedule(`${m} ${h} * * *`, async () => {
-        try {
-            const channel = await client.channels.fetch(alert.channelId);
-
-            let msg = alert.message
-                .replace("{count}", count)
-                .replace("{user}", `<@${alert.userId}>`);
-
-            await channel.send(msg);
-
-            if (alert.image) await channel.send(alert.image);
-
-            count++;
-        } catch (err) {
-            console.log("CRON ERROR:", err);
-        }
-    }, {
-        timezone: "Europe/Brussels"
-    });
-
-    tasks[alert.guildId][alert.userId][alert.id] = task;
 }
 
 // INTERACTIONS
@@ -109,65 +105,68 @@ client.on('interactionCreate', async interaction => {
 
     try {
 
-        // CREATE
+        // CREATE ALERT
         if (interaction.commandName === 'alertepingday') {
 
             await interaction.deferReply();
 
-            const user = interaction.options.getUser('utilisateur');
             const time = interaction.options.getString('time');
             const message = interaction.options.getString('message');
             const image = interaction.options.getString('image');
+            const userId = interaction.user.id;
 
             db.run(
                 "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
-                [guildId, user.id, interaction.channel.id, time, message, image],
+                [guildId, userId, interaction.channel.id, time, message, image],
                 function (err) {
                     if (err) return console.log(err);
 
                     startCron({
                         id: this.lastID,
                         guildId,
-                        userId: user.id,
+                        userId,
                         channelId: interaction.channel.id,
                         time,
                         message,
                         image
                     });
+
+                    interaction.editReply(`✅ Alerte créée ! ID = **${this.lastID}**`);
                 }
             );
-
-            return interaction.editReply(`✅ Alerte créée pour ${user.username}`);
         }
 
-        // STOP (SECURE)
+        // DELETE SAFE (OWNER ONLY)
         if (interaction.commandName === 'stopalertepingday') {
 
             await interaction.deferReply();
 
+            const id = interaction.options.getInteger('id');
             const userId = interaction.user.id;
 
             db.get(
-                "SELECT * FROM alerts WHERE guildId = ? AND userId = ?",
-                [guildId, userId],
+                "SELECT * FROM alerts WHERE id = ?",
+                [id],
                 (err, alert) => {
                     if (err) return console.log(err);
 
                     if (!alert) {
-                        return interaction.editReply("❌ Tu n'as aucune alerte");
+                        return interaction.editReply("❌ Aucune alerte trouvée");
                     }
 
-                    if (tasks[guildId]?.[userId]?.[alert.id]) {
-                        tasks[guildId][userId][alert.id].stop();
-                        delete tasks[guildId][userId][alert.id];
+                    if (alert.userId !== userId) {
+                        return interaction.editReply("❌ Tu ne peux pas supprimer une alerte qui ne t’appartient pas");
                     }
 
-                    db.run(
-                        "DELETE FROM alerts WHERE id = ?",
-                        [alert.id]
-                    );
+                    // stop cron
+                    if (tasks[id]) {
+                        tasks[id].stop();
+                        delete tasks[id];
+                    }
 
-                    return interaction.editReply("🛑 Ton alerte a été supprimée");
+                    db.run("DELETE FROM alerts WHERE id = ?", [id]);
+
+                    return interaction.editReply(`🛑 Alerte ${id} supprimée`);
                 }
             );
         }
