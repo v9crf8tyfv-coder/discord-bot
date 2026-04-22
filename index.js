@@ -12,7 +12,7 @@ const client = new Client({
 // DB
 const db = new sqlite3.Database("./alerts.db");
 
-// CREATE TABLE
+// TABLE
 db.run(`
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,9 +59,11 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.log("Commandes installées");
 })();
 
-// RESTORE ALERTS ON START
+// READY + RESTORE CLEAN
 client.once('ready', () => {
     console.log(`BOT CONNECTÉ : ${client.user.tag}`);
+
+    tasks = {}; // clean memory
 
     db.all("SELECT * FROM alerts", (err, rows) => {
         if (err) return console.log(err);
@@ -72,28 +74,36 @@ client.once('ready', () => {
     });
 });
 
-// FUNCTION CRON
+// CRON FUNCTION CLEAN
 function startCron(alert) {
-    const [h, m] = alert.time.split(':');
-
     if (!tasks[alert.guildId]) tasks[alert.guildId] = {};
+
+    const existing = tasks[alert.guildId][alert.userId];
+    if (existing) existing.stop();
+
+    const [h, m] = alert.time.split(':');
 
     let count = 1;
 
     const task = cron.schedule(`${m} ${h} * * *`, async () => {
-        const channel = await client.channels.fetch(alert.channelId);
+        try {
+            const channel = await client.channels.fetch(alert.channelId);
 
-        let msg = alert.message
-            .replace("{count}", count)
-            .replace("{user}", `<@${alert.userId}>`);
+            let msg = alert.message
+                .replace("{count}", count)
+                .replace("{user}", `<@${alert.userId}>`);
 
-        await channel.send(msg);
+            await channel.send(msg);
 
-        if (alert.image) {
-            await channel.send(alert.image);
+            if (alert.image) {
+                await channel.send(alert.image);
+            }
+
+            count++;
+        } catch (err) {
+            console.log("CRON ERROR:", err);
         }
 
-        count++;
     }, {
         timezone: "Europe/Brussels"
     });
@@ -107,7 +117,7 @@ client.on('interactionCreate', async interaction => {
 
     const guildId = interaction.guild.id;
 
-    // CREATE ALERT
+    // CREATE
     if (interaction.commandName === 'alertepingday') {
 
         const user = interaction.options.getUser('utilisateur');
@@ -115,27 +125,24 @@ client.on('interactionCreate', async interaction => {
         const message = interaction.options.getString('message');
         const image = interaction.options.getString('image');
 
-        // SAVE DB
         db.run(
             "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
             [guildId, user.id, interaction.channel.id, time, message, image]
         );
 
-        const fakeAlert = {
+        startCron({
             guildId,
             userId: user.id,
             channelId: interaction.channel.id,
             time,
             message,
             image
-        };
-
-        startCron(fakeAlert);
+        });
 
         return interaction.reply(`✅ Alerte créée pour ${user.username}`);
     }
 
-    // STOP ALERT
+    // STOP
     if (interaction.commandName === 'stopalertepingday') {
 
         const user = interaction.options.getUser('utilisateur');
@@ -150,7 +157,7 @@ client.on('interactionCreate', async interaction => {
             [guildId, user.id]
         );
 
-        return interaction.reply(`🛑 Alerte supprimée pour ${user.username}`);
+        return interaction.reply(`🛑 Alerte stoppée pour ${user.username}`);
     }
 });
 
