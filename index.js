@@ -71,12 +71,12 @@ function startCron(alert) {
     if (!tasks[alert.id]) {
 
         let count = 1;
-
         const [h, m] = alert.time.split(':');
 
         const task = cron.schedule(`${m} ${h} * * *`, async () => {
             try {
                 const channel = await client.channels.fetch(alert.channelId);
+                if (!channel) return;
 
                 let msg = alert.message
                     .replace("{count}", count)
@@ -100,6 +100,12 @@ function startCron(alert) {
 // INTERACTIONS
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
+    if (!interaction.guild) {
+        return interaction.reply({
+            content: "❌ Commande utilisable uniquement sur un serveur",
+            ephemeral: true
+        });
+    }
 
     const guildId = interaction.guild.id;
 
@@ -108,7 +114,7 @@ client.on('interactionCreate', async interaction => {
         // CREATE ALERT
         if (interaction.commandName === 'alertepingday') {
 
-            await interaction.deferReply();
+            await interaction.deferReply({ ephemeral: true });
 
             const time = interaction.options.getString('time');
             const message = interaction.options.getString('message');
@@ -131,7 +137,9 @@ client.on('interactionCreate', async interaction => {
                         image
                     });
 
-                    interaction.editReply(`✅ Alerte créée ! ID = **${this.lastID}**`);
+                    setTimeout(() => {
+                        interaction.editReply(`✅ Alerte créée ! ID = **${this.lastID}**`);
+                    }, 100);
                 }
             );
         }
@@ -139,7 +147,7 @@ client.on('interactionCreate', async interaction => {
         // DELETE SAFE (OWNER ONLY)
         if (interaction.commandName === 'stopalertepingday') {
 
-            await interaction.deferReply();
+            await interaction.deferReply({ ephemeral: true });
 
             const id = interaction.options.getInteger('id');
             const userId = interaction.user.id;
@@ -155,10 +163,9 @@ client.on('interactionCreate', async interaction => {
                     }
 
                     if (alert.userId !== userId) {
-                        return interaction.editReply("❌ Tu ne peux pas supprimer une alerte qui ne t’appartient pas");
+                        return interaction.editReply("❌ Tu ne peux supprimer QUE tes alertes");
                     }
 
-                    // stop cron
                     if (tasks[id]) {
                         tasks[id].stop();
                         delete tasks[id];
