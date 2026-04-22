@@ -2,15 +2,17 @@ const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST } = require
 const cron = require('node-cron');
 const Database = require("better-sqlite3");
 
+// ENV
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
+// CLIENT
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// DB (FIX RAILWAY)
-const db = new Database("./alerts.db");
+// DB
+const db = new Database("alerts.db");
 
 // TABLE
 db.exec(`
@@ -32,29 +34,43 @@ const commands = [
     new SlashCommandBuilder()
         .setName('alertepingday')
         .setDescription('Créer une alerte quotidienne')
-        .addStringOption(option =>
-            option.setName('time').setDescription('HH:MM').setRequired(true))
-        .addStringOption(option =>
-            option.setName('message').setDescription('Message').setRequired(true))
-        .addStringOption(option =>
-            option.setName('image').setDescription('Image (optionnel)').setRequired(false)),
+        .addStringOption(opt =>
+            opt.setName('time')
+                .setDescription('HH:MM')
+                .setRequired(true))
+        .addStringOption(opt =>
+            opt.setName('message')
+                .setDescription('Message')
+                .setRequired(true))
+        .addStringOption(opt =>
+            opt.setName('image')
+                .setDescription('Image (optionnel)')
+                .setRequired(false)
+        ),
 
     new SlashCommandBuilder()
         .setName('stopalertepingday')
         .setDescription('Supprimer ton alerte')
-        .addIntegerOption(option =>
-            option.setName('id').setDescription('ID alerte').setRequired(true))
-].map(cmd => cmd.toJSON());
+        .addIntegerOption(opt =>
+            opt.setName('id')
+                .setDescription('ID alerte')
+                .setRequired(true)
+        )
+].map(c => c.toJSON());
 
-// REGISTER COMMANDS
+// REGISTER
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
-    await rest.put(
-        Routes.applicationCommands(CLIENT_ID),
-        { body: commands }
-    );
-    console.log("Commandes installées");
+    try {
+        await rest.put(
+            Routes.applicationCommands(CLIENT_ID),
+            { body: commands }
+        );
+        console.log("Commandes installées");
+    } catch (e) {
+        console.log("ERROR REGISTER:", e);
+    }
 })();
 
 // READY
@@ -65,7 +81,7 @@ client.once('ready', () => {
     rows.forEach(startCron);
 });
 
-// CRON
+// CRON SYSTEM
 function startCron(alert) {
     if (tasks[alert.id]) return;
 
@@ -75,7 +91,7 @@ function startCron(alert) {
     const task = cron.schedule(`${m} ${h} * * *`, async () => {
         try {
             const channel = await client.channels.fetch(alert.channelId);
-            if (!channel) return;
+            if (!channel) return console.log("Channel introuvable");
 
             let msg = alert.message
                 .replace("{count}", count)
@@ -103,11 +119,9 @@ client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     if (!interaction.guild) return;
 
-    const guildId = interaction.guild.id;
-
     try {
 
-        // CREATE ALERT
+        // CREATE
         if (interaction.commandName === 'alertepingday') {
 
             await interaction.deferReply();
@@ -123,7 +137,7 @@ client.on('interactionCreate', async interaction => {
             `);
 
             const result = stmt.run(
-                guildId,
+                interaction.guild.id,
                 userId,
                 interaction.channel.id,
                 time,
@@ -133,7 +147,7 @@ client.on('interactionCreate', async interaction => {
 
             startCron({
                 id: result.lastInsertRowid,
-                guildId,
+                guildId: interaction.guild.id,
                 userId,
                 channelId: interaction.channel.id,
                 time,
@@ -141,10 +155,10 @@ client.on('interactionCreate', async interaction => {
                 image
             });
 
-            interaction.editReply(`✅ Alerte créée ! ID = **${result.lastInsertRowid}**`);
+            return interaction.editReply(`✅ Alerte créée ! ID = **${result.lastInsertRowid}**`);
         }
 
-        // DELETE ALERT (SAFE)
+        // DELETE SAFE
         if (interaction.commandName === 'stopalertepingday') {
 
             await interaction.deferReply();
@@ -159,7 +173,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (alert.userId !== userId) {
-                return interaction.editReply("❌ Tu ne peux pas supprimer cette alerte");
+                return interaction.editReply("❌ Tu ne peux supprimer que tes alertes");
             }
 
             if (tasks[id]) {
@@ -169,7 +183,7 @@ client.on('interactionCreate', async interaction => {
 
             db.prepare("DELETE FROM alerts WHERE id = ?").run(id);
 
-            interaction.editReply(`🛑 Alerte ${id} supprimée`);
+            return interaction.editReply(`🛑 Alerte ${id} supprimée`);
         }
 
     } catch (err) {
