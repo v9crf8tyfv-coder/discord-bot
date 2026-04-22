@@ -42,9 +42,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('stopalertepingday')
-        .setDescription('Stop une alerte')
-        .addUserOption(option =>
-            option.setName('utilisateur').setDescription('Utilisateur').setRequired(true))
+        .setDescription('Stop TON alerte uniquement')
 ].map(cmd => cmd.toJSON());
 
 // REGISTER COMMANDS
@@ -62,8 +60,6 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 client.once('ready', () => {
     console.log(`BOT CONNECTÉ : ${client.user.tag}`);
 
-    tasks = {};
-
     db.all("SELECT * FROM alerts", (err, rows) => {
         if (err) return console.log(err);
         rows.forEach(alert => startCron(alert));
@@ -74,8 +70,8 @@ client.once('ready', () => {
 function startCron(alert) {
     if (!tasks[alert.guildId]) tasks[alert.guildId] = {};
 
-    if (tasks[alert.guildId][alert.userId]) {
-        tasks[alert.guildId][alert.userId].stop();
+    if (!tasks[alert.guildId][alert.userId]) {
+        tasks[alert.guildId][alert.userId] = {};
     }
 
     const [h, m] = alert.time.split(':');
@@ -102,10 +98,10 @@ function startCron(alert) {
         timezone: "Europe/Brussels"
     });
 
-    tasks[alert.guildId][alert.userId] = task;
+    tasks[alert.guildId][alert.userId][alert.id] = task;
 }
 
-// INTERACTIONS (FIX IMPORTANT)
+// INTERACTIONS
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
@@ -125,46 +121,61 @@ client.on('interactionCreate', async interaction => {
 
             db.run(
                 "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
-                [guildId, user.id, interaction.channel.id, time, message, image]
-            );
+                [guildId, user.id, interaction.channel.id, time, message, image],
+                function (err) {
+                    if (err) return console.log(err);
 
-            startCron({
-                guildId,
-                userId: user.id,
-                channelId: interaction.channel.id,
-                time,
-                message,
-                image
-            });
+                    startCron({
+                        id: this.lastID,
+                        guildId,
+                        userId: user.id,
+                        channelId: interaction.channel.id,
+                        time,
+                        message,
+                        image
+                    });
+                }
+            );
 
             return interaction.editReply(`✅ Alerte créée pour ${user.username}`);
         }
 
-        // STOP
+        // STOP (SECURE)
         if (interaction.commandName === 'stopalertepingday') {
 
             await interaction.deferReply();
 
-            const user = interaction.options.getUser('utilisateur');
+            const userId = interaction.user.id;
 
-            if (tasks[guildId]?.[user.id]) {
-                tasks[guildId][user.id].stop();
-                delete tasks[guildId][user.id];
-            }
+            db.get(
+                "SELECT * FROM alerts WHERE guildId = ? AND userId = ?",
+                [guildId, userId],
+                (err, alert) => {
+                    if (err) return console.log(err);
 
-            db.run(
-                "DELETE FROM alerts WHERE guildId = ? AND userId = ?",
-                [guildId, user.id]
+                    if (!alert) {
+                        return interaction.editReply("❌ Tu n'as aucune alerte");
+                    }
+
+                    if (tasks[guildId]?.[userId]?.[alert.id]) {
+                        tasks[guildId][userId][alert.id].stop();
+                        delete tasks[guildId][userId][alert.id];
+                    }
+
+                    db.run(
+                        "DELETE FROM alerts WHERE id = ?",
+                        [alert.id]
+                    );
+
+                    return interaction.editReply("🛑 Ton alerte a été supprimée");
+                }
             );
-
-            return interaction.editReply(`🛑 Alerte stoppée pour ${user.username}`);
         }
 
     } catch (err) {
-        console.log("ERROR:", err);
-
+        console.log(err);
         if (!interaction.replied) {
-            await interaction.reply("❌ Erreur dans la commande");
+            await interaction.reply("❌ Erreur");
         }
     }
 });
