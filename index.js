@@ -12,7 +12,6 @@ const client = new Client({
 // DB
 const db = new sqlite3.Database("./alerts.db");
 
-// TABLE
 db.run(`
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,27 +58,25 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.log("Commandes installées");
 })();
 
-// READY + RESTORE CLEAN
+// READY
 client.once('ready', () => {
     console.log(`BOT CONNECTÉ : ${client.user.tag}`);
 
-    tasks = {}; // clean memory
+    tasks = {};
 
     db.all("SELECT * FROM alerts", (err, rows) => {
         if (err) return console.log(err);
-
-        rows.forEach(alert => {
-            startCron(alert);
-        });
+        rows.forEach(alert => startCron(alert));
     });
 });
 
-// CRON FUNCTION CLEAN
+// CRON
 function startCron(alert) {
     if (!tasks[alert.guildId]) tasks[alert.guildId] = {};
 
-    const existing = tasks[alert.guildId][alert.userId];
-    if (existing) existing.stop();
+    if (tasks[alert.guildId][alert.userId]) {
+        tasks[alert.guildId][alert.userId].stop();
+    }
 
     const [h, m] = alert.time.split(':');
 
@@ -95,15 +92,12 @@ function startCron(alert) {
 
             await channel.send(msg);
 
-            if (alert.image) {
-                await channel.send(alert.image);
-            }
+            if (alert.image) await channel.send(alert.image);
 
             count++;
         } catch (err) {
             console.log("CRON ERROR:", err);
         }
-
     }, {
         timezone: "Europe/Brussels"
     });
@@ -111,53 +105,67 @@ function startCron(alert) {
     tasks[alert.guildId][alert.userId] = task;
 }
 
-// EVENTS
+// INTERACTIONS (FIX IMPORTANT)
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
     const guildId = interaction.guild.id;
 
-    // CREATE
-    if (interaction.commandName === 'alertepingday') {
+    try {
 
-        const user = interaction.options.getUser('utilisateur');
-        const time = interaction.options.getString('time');
-        const message = interaction.options.getString('message');
-        const image = interaction.options.getString('image');
+        // CREATE
+        if (interaction.commandName === 'alertepingday') {
 
-        db.run(
-            "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
-            [guildId, user.id, interaction.channel.id, time, message, image]
-        );
+            await interaction.deferReply();
 
-        startCron({
-            guildId,
-            userId: user.id,
-            channelId: interaction.channel.id,
-            time,
-            message,
-            image
-        });
+            const user = interaction.options.getUser('utilisateur');
+            const time = interaction.options.getString('time');
+            const message = interaction.options.getString('message');
+            const image = interaction.options.getString('image');
 
-        return interaction.reply(`✅ Alerte créée pour ${user.username}`);
-    }
+            db.run(
+                "INSERT INTO alerts (guildId, userId, channelId, time, message, image) VALUES (?, ?, ?, ?, ?, ?)",
+                [guildId, user.id, interaction.channel.id, time, message, image]
+            );
 
-    // STOP
-    if (interaction.commandName === 'stopalertepingday') {
+            startCron({
+                guildId,
+                userId: user.id,
+                channelId: interaction.channel.id,
+                time,
+                message,
+                image
+            });
 
-        const user = interaction.options.getUser('utilisateur');
-
-        if (tasks[guildId]?.[user.id]) {
-            tasks[guildId][user.id].stop();
-            delete tasks[guildId][user.id];
+            return interaction.editReply(`✅ Alerte créée pour ${user.username}`);
         }
 
-        db.run(
-            "DELETE FROM alerts WHERE guildId = ? AND userId = ?",
-            [guildId, user.id]
-        );
+        // STOP
+        if (interaction.commandName === 'stopalertepingday') {
 
-        return interaction.reply(`🛑 Alerte stoppée pour ${user.username}`);
+            await interaction.deferReply();
+
+            const user = interaction.options.getUser('utilisateur');
+
+            if (tasks[guildId]?.[user.id]) {
+                tasks[guildId][user.id].stop();
+                delete tasks[guildId][user.id];
+            }
+
+            db.run(
+                "DELETE FROM alerts WHERE guildId = ? AND userId = ?",
+                [guildId, user.id]
+            );
+
+            return interaction.editReply(`🛑 Alerte stoppée pour ${user.username}`);
+        }
+
+    } catch (err) {
+        console.log("ERROR:", err);
+
+        if (!interaction.replied) {
+            await interaction.reply("❌ Erreur dans la commande");
+        }
     }
 });
 
