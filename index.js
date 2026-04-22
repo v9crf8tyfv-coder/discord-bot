@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST } = require('discord.js');
 const cron = require('node-cron');
-const sqlite3 = require("sqlite3").verbose();
+const Database = require("better-sqlite3");
+const db = new Database("alerts.db");
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
