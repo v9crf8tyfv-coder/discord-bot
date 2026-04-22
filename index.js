@@ -1,5 +1,4 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, Routes, REST } = require('discord.js');
-const cron = require('node-cron');
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -8,9 +7,10 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
+// stockage des timers
 let tasks = {};
 
-// COMMANDES
+// ================= COMMANDES =================
 const commands = [
     new SlashCommandBuilder()
         .setName('alertepingday')
@@ -31,7 +31,7 @@ const commands = [
             option.setName('utilisateur').setDescription('Utilisateur').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// ENREGISTREMENT COMMANDES
+// ================= REGISTER COMMANDS =================
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
@@ -42,7 +42,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
     console.log("Commandes installées");
 })();
 
-// EVENTS
+// ================= INTERACTIONS =================
 client.on('interactionCreate', async interaction => {
     try {
         if (!interaction.isChatInputCommand()) return;
@@ -50,7 +50,7 @@ client.on('interactionCreate', async interaction => {
         const guildId = interaction.guild.id;
         if (!tasks[guildId]) tasks[guildId] = {};
 
-        // CREATE ALERT
+        // ================= CREATE ALERT =================
         if (interaction.commandName === 'alertepingday') {
             await interaction.reply("⏳ Création de l’alerte...");
 
@@ -63,12 +63,24 @@ client.on('interactionCreate', async interaction => {
 
             const [h, m] = time.split(':').map(Number);
 
-            console.log("CRON ARME POUR :", h, m);
-
             let count = 1;
 
-            const task = cron.schedule(`${m} ${h} * * *`, async () => {
-                console.log("CRON TRIGGER");
+            // CALCUL TEMPS (FIABLE)
+            const now = new Date();
+            const target = new Date();
+            target.setHours(h, m, 0, 0);
+
+            let delay = target - now;
+
+            // si heure passée → demain
+            if (delay < 0) {
+                delay += 24 * 60 * 60 * 1000;
+            }
+
+            console.log("TIMER ARME DANS :", delay, "ms");
+
+            const timer = setTimeout(async () => {
+                console.log("TIMER TRIGGER");
 
                 const channel = await client.channels.fetch(channelId);
 
@@ -80,23 +92,21 @@ client.on('interactionCreate', async interaction => {
                 if (image) await channel.send(image);
 
                 count++;
-            }, {
-                timezone: "Europe/Brussels"
-            });
+            }, delay);
 
-            tasks[guildId][user.id] = task;
+            tasks[guildId][user.id] = timer;
 
             return interaction.followUp(`✅ Alerte créée pour ${user.username}`);
         }
 
-        // STOP ALERT
+        // ================= STOP ALERT =================
         if (interaction.commandName === 'stopalertepingday') {
             await interaction.reply("🛑 Arrêt en cours...");
 
             const user = interaction.options.getUser('utilisateur');
 
             if (tasks[guildId][user.id]) {
-                tasks[guildId][user.id].stop();
+                clearTimeout(tasks[guildId][user.id]);
                 delete tasks[guildId][user.id];
 
                 return interaction.followUp(`✅ Alerte stoppée pour ${user.username}`);
@@ -114,7 +124,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// READY
+// ================= READY =================
 client.on('ready', () => {
     console.log(`BOT CONNECTÉ : ${client.user.tag}`);
 });
